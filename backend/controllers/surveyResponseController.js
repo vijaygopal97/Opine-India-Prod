@@ -915,9 +915,38 @@ const getMyInterviews = async (req, res) => {
         return false;
       }
 
-      const responseValue = targetResponse.response;
+      let responseValue = targetResponse.response;
       const conditionValue = condition.value;
 
+      // Handle array responses
+      const isArrayResponse = Array.isArray(responseValue);
+      if (isArrayResponse) {
+        // For array responses, check if any element matches the condition
+        switch (condition.operator) {
+          case 'equals':
+            return responseValue.includes(conditionValue);
+          case 'not_equals':
+            return !responseValue.includes(conditionValue);
+          case 'contains':
+            return responseValue.some(val => val.toString().toLowerCase().includes(conditionValue.toString().toLowerCase()));
+          case 'not_contains':
+            return !responseValue.some(val => val.toString().toLowerCase().includes(conditionValue.toString().toLowerCase()));
+          case 'is_selected':
+            return responseValue.includes(conditionValue);
+          case 'is_not_selected':
+            return !responseValue.includes(conditionValue);
+          case 'is_empty':
+            return responseValue.length === 0;
+          case 'is_not_empty':
+            return responseValue.length > 0;
+          default:
+            // For other operators, use first value or return false
+            if (responseValue.length === 0) return false;
+            responseValue = responseValue[0];
+        }
+      }
+
+      // Handle non-array responses
       switch (condition.operator) {
         case 'equals':
           return responseValue === conditionValue;
@@ -1033,6 +1062,24 @@ const getPendingApprovals = async (req, res) => {
     console.log('getPendingApprovals - User ID:', req.user.id, 'Type:', typeof req.user.id);
 
     // Build query - only get responses with status 'Pending_Approval' for surveys belonging to this company
+    const mongoose = require('mongoose');
+    const Survey = require('../models/Survey');
+    
+    // Convert companyId to ObjectId for proper matching
+    const companyObjectId = mongoose.Types.ObjectId.isValid(companyId) 
+      ? new mongoose.Types.ObjectId(companyId) 
+      : companyId;
+
+    // For company admins, first get all surveys for the company to filter responses
+    let companySurveyIds = null;
+    if (userType !== 'quality_agent') {
+      const companySurveys = await Survey.find({ company: companyObjectId })
+        .select('_id')
+        .lean();
+      companySurveyIds = companySurveys.map(s => s._id);
+      console.log('getPendingApprovals - Company survey IDs:', companySurveyIds.length);
+    }
+
     let query = { 
       status: 'Pending_Approval'
     };
@@ -1041,9 +1088,6 @@ const getPendingApprovals = async (req, res) => {
     let assignedSurveyIds = null;
     let surveyAssignmentsMap = {}; // Map to store AC assignments for each survey
     if (userType === 'quality_agent') {
-      const Survey = require('../models/Survey');
-      const mongoose = require('mongoose');
-      
       // Convert userId to ObjectId for proper matching
       const userIdObjectId = mongoose.Types.ObjectId.isValid(userId) 
         ? new mongoose.Types.ObjectId(userId) 
@@ -1128,6 +1172,19 @@ const getPendingApprovals = async (req, res) => {
       // Check how many pending responses exist for these surveys
       const pendingCount = await SurveyResponse.countDocuments(query);
       console.log('getPendingApprovals - Total pending responses for assigned surveys:', pendingCount);
+    } else if (companySurveyIds && companySurveyIds.length > 0) {
+      // For company admins, filter by company survey IDs
+      query.survey = { $in: companySurveyIds };
+      console.log('getPendingApprovals - Filtering by company survey IDs:', companySurveyIds.length);
+    } else if (companySurveyIds && companySurveyIds.length === 0) {
+      // Company has no surveys, return empty
+      return res.status(200).json({
+        success: true,
+        data: {
+          interviews: [],
+          total: 0
+        }
+      });
     }
 
     // Build sort object
@@ -1139,7 +1196,6 @@ const getPendingApprovals = async (req, res) => {
       .populate({
         path: 'survey',
         select: 'surveyName description category sections company assignedQualityAgents',
-        ...(userType !== 'quality_agent' ? { match: { company: companyId } } : {}), // Only filter by company if not quality agent (we already filtered by survey IDs)
         populate: {
           path: 'assignedQualityAgents.qualityAgent',
           select: 'firstName lastName email _id'
@@ -1262,29 +1318,42 @@ const getPendingApprovals = async (req, res) => {
     }
 
     // Helper functions to extract respondent info
+    // Helper to extract value from response (handle arrays)
+    function extractResponseValue(response) {
+      if (!response || response === null || response === undefined) return null;
+      if (Array.isArray(response)) {
+        // For arrays, return the first value (or join if needed)
+        return response.length > 0 ? response[0] : null;
+      }
+      return response;
+    }
+
     function getRespondentName(responses) {
       const nameResponse = responses.find(r => 
-        r.questionText.toLowerCase().includes('name') || 
-        r.questionText.toLowerCase().includes('respondent')
+        r.questionText?.toLowerCase().includes('name') || 
+        r.questionText?.toLowerCase().includes('respondent')
       );
-      return nameResponse?.response || 'Not Available';
+      const value = extractResponseValue(nameResponse?.response);
+      return value || 'Not Available';
     }
 
     function getRespondentGender(responses) {
       const genderResponse = responses.find(r => 
-        r.questionText.toLowerCase().includes('gender') || 
-        r.questionText.toLowerCase().includes('sex')
+        r.questionText?.toLowerCase().includes('gender') || 
+        r.questionText?.toLowerCase().includes('sex')
       );
-      return genderResponse?.response || 'Not Available';
+      const value = extractResponseValue(genderResponse?.response);
+      return value || 'Not Available';
     }
 
     function getRespondentAge(responses) {
       const ageResponse = responses.find(r => 
-        r.questionText.toLowerCase().includes('age') || 
-        r.questionText.toLowerCase().includes('year')
+        r.questionText?.toLowerCase().includes('age') || 
+        r.questionText?.toLowerCase().includes('year')
       );
-      if (!ageResponse?.response) return null;
-      const ageMatch = ageResponse.response.toString().match(/\d+/);
+      const value = extractResponseValue(ageResponse?.response);
+      if (!value) return null;
+      const ageMatch = value.toString().match(/\d+/);
       return ageMatch ? parseInt(ageMatch[0]) : null;
     }
 
@@ -1303,9 +1372,38 @@ const getPendingApprovals = async (req, res) => {
         return false;
       }
 
-      const responseValue = targetResponse.response;
+      let responseValue = targetResponse.response;
       const conditionValue = condition.value;
 
+      // Handle array responses
+      const isArrayResponse = Array.isArray(responseValue);
+      if (isArrayResponse) {
+        // For array responses, check if any element matches the condition
+        switch (condition.operator) {
+          case 'equals':
+            return responseValue.includes(conditionValue);
+          case 'not_equals':
+            return !responseValue.includes(conditionValue);
+          case 'contains':
+            return responseValue.some(val => val.toString().toLowerCase().includes(conditionValue.toString().toLowerCase()));
+          case 'not_contains':
+            return !responseValue.some(val => val.toString().toLowerCase().includes(conditionValue.toString().toLowerCase()));
+          case 'is_selected':
+            return responseValue.includes(conditionValue);
+          case 'is_not_selected':
+            return !responseValue.includes(conditionValue);
+          case 'is_empty':
+            return responseValue.length === 0;
+          case 'is_not_empty':
+            return responseValue.length > 0;
+          default:
+            // For other operators, use first value or return false
+            if (responseValue.length === 0) return false;
+            responseValue = responseValue[0];
+        }
+      }
+
+      // Handle non-array responses
       switch (condition.operator) {
         case 'equals':
           return responseValue === conditionValue;
@@ -1406,6 +1504,420 @@ const getPendingApprovals = async (req, res) => {
   }
 };
 
+// Get next available response from queue for review
+const getNextReviewAssignment = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const companyId = req.user.company;
+    const userType = req.user.userType;
+    const { search, gender, ageMin, ageMax } = req.query;
+
+    console.log('getNextReviewAssignment - User:', req.user.email, req.user.userType);
+
+    const mongoose = require('mongoose');
+    const Survey = require('../models/Survey');
+    
+    // Convert companyId to ObjectId for proper matching
+    const companyObjectId = mongoose.Types.ObjectId.isValid(companyId) 
+      ? new mongoose.Types.ObjectId(companyId) 
+      : companyId;
+
+    // Build base query - only get responses with status 'Pending_Approval' that are NOT assigned
+    // Check for responses that either don't have reviewAssignment, or have expired assignments
+    const now = new Date();
+    let query = { 
+      status: 'Pending_Approval',
+      $or: [
+        { reviewAssignment: { $exists: false } },
+        { 'reviewAssignment.assignedTo': null },
+        { 'reviewAssignment.expiresAt': { $lt: now } } // Expired assignments
+      ]
+    };
+
+    // If quality agent, filter by assigned surveys and ACs
+    let assignedSurveyIds = null;
+    let surveyAssignmentsMap = {};
+    if (userType === 'quality_agent') {
+      const userIdObjectId = mongoose.Types.ObjectId.isValid(userId) 
+        ? new mongoose.Types.ObjectId(userId) 
+        : userId;
+      
+      const assignedSurveys = await Survey.find({
+        company: companyObjectId,
+        'assignedQualityAgents.qualityAgent': { $in: [userIdObjectId, userId] }
+      })
+      .select('_id surveyName assignedQualityAgents')
+      .lean();
+      
+      assignedSurveys.forEach(survey => {
+        const agentAssignment = survey.assignedQualityAgents.find(a => {
+          const agentId = a.qualityAgent._id || a.qualityAgent;
+          return agentId?.toString() === userId?.toString();
+        });
+        
+        if (agentAssignment) {
+          surveyAssignmentsMap[survey._id.toString()] = {
+            assignedACs: agentAssignment.assignedACs || [],
+            selectedState: agentAssignment.selectedState,
+            selectedCountry: agentAssignment.selectedCountry
+          };
+        }
+      });
+      
+      // Convert survey IDs to ObjectIds to ensure proper query
+      assignedSurveyIds = assignedSurveys.map(s => {
+        const id = s._id;
+        return mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : id;
+      });
+      
+      if (assignedSurveyIds.length === 0) {
+        return res.status(200).json({
+          success: true,
+          data: {
+            interview: null,
+            message: 'No surveys assigned to you'
+          }
+        });
+      }
+      
+      query.survey = { $in: assignedSurveyIds };
+    } else {
+      // For company admin, get all surveys for the company and filter responses
+      const companySurveys = await Survey.find({ company: companyObjectId })
+        .select('_id')
+        .lean();
+      const companySurveyIds = companySurveys.map(s => s._id);
+      
+      if (companySurveyIds.length === 0) {
+        return res.status(200).json({
+          success: true,
+          data: {
+            interview: null,
+            message: 'No surveys found for your company'
+          }
+        });
+      }
+      
+      query.survey = { $in: companySurveyIds };
+    }
+
+    // Find the next available response (oldest first)
+    let availableResponses = await SurveyResponse.find(query)
+      .populate({
+        path: 'survey',
+        select: 'surveyName description category sections company assignedQualityAgents',
+        populate: {
+          path: 'assignedQualityAgents.qualityAgent',
+          select: 'firstName lastName email _id'
+        }
+      })
+      .populate('interviewer', 'firstName lastName email')
+      .sort({ createdAt: 1 }) // Oldest first
+      .lean();
+
+    // Filter out null surveys (shouldn't happen now, but keep as safety check)
+    availableResponses = availableResponses.filter(response => response.survey !== null);
+
+    // If quality agent, filter by AC assignments
+    if (userType === 'quality_agent') {
+      availableResponses = availableResponses.filter(response => {
+        const survey = response.survey;
+        if (!survey || !survey._id) return false;
+        
+        const surveyId = survey._id.toString();
+        const assignment = surveyAssignmentsMap[surveyId];
+        
+        if (!assignment) return false;
+        
+        const assignedACs = assignment.assignedACs || [];
+        const hasAssignedACs = Array.isArray(assignedACs) && assignedACs.length > 0;
+        
+        if (hasAssignedACs) {
+          return response.selectedAC && assignedACs.includes(response.selectedAC);
+        }
+        
+        return true; // No ACs assigned, show all
+      });
+    }
+
+    // Apply client-side filters
+    if (search) {
+      const searchLower = search.toLowerCase();
+      availableResponses = availableResponses.filter(response => {
+        const respondentName = getRespondentName(response.responses);
+        return (
+          response.survey?.surveyName?.toLowerCase().includes(searchLower) ||
+          response.responseId?.toString().includes(search) ||
+          response.sessionId?.toLowerCase().includes(searchLower) ||
+          respondentName.toLowerCase().includes(searchLower)
+        );
+      });
+    }
+
+    if (gender) {
+      availableResponses = availableResponses.filter(response => {
+        const respondentGender = getRespondentGender(response.responses);
+        return respondentGender.toLowerCase() === gender.toLowerCase();
+      });
+    }
+
+    if (ageMin || ageMax) {
+      availableResponses = availableResponses.filter(response => {
+        const age = getRespondentAge(response.responses);
+        if (!age) return false;
+        if (ageMin && age < parseInt(ageMin)) return false;
+        if (ageMax && age > parseInt(ageMax)) return false;
+        return true;
+      });
+    }
+
+    // Helper functions
+    // Helper to extract value from response (handle arrays)
+    function extractResponseValue(response) {
+      if (!response || response === null || response === undefined) return null;
+      if (Array.isArray(response)) {
+        // For arrays, return the first value (or join if needed)
+        return response.length > 0 ? response[0] : null;
+      }
+      return response;
+    }
+
+    function getRespondentName(responses) {
+      const nameResponse = responses?.find(r => 
+        r.questionText?.toLowerCase().includes('name') || 
+        r.questionText?.toLowerCase().includes('respondent')
+      );
+      const value = extractResponseValue(nameResponse?.response);
+      return value || 'Not Available';
+    }
+
+    function getRespondentGender(responses) {
+      const genderResponse = responses?.find(r => 
+        r.questionText?.toLowerCase().includes('gender') || 
+        r.questionText?.toLowerCase().includes('sex')
+      );
+      const value = extractResponseValue(genderResponse?.response);
+      return value || 'Not Available';
+    }
+
+    function getRespondentAge(responses) {
+      const ageResponse = responses?.find(r => 
+        r.questionText?.toLowerCase().includes('age') || 
+        r.questionText?.toLowerCase().includes('year')
+      );
+      const value = extractResponseValue(ageResponse?.response);
+      if (!value) return null;
+      const ageMatch = value.toString().match(/\d+/);
+      return ageMatch ? parseInt(ageMatch[0]) : null;
+    }
+
+    if (availableResponses.length === 0) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          interview: null,
+          message: 'No responses available for review'
+        }
+      });
+    }
+
+    // Get the first available response
+    const nextResponse = availableResponses[0];
+
+    // Assign it to the current user (30 minutes lock)
+    const expiresAt = new Date();
+    expiresAt.setMinutes(expiresAt.getMinutes() + 30);
+
+    const updatedResponse = await SurveyResponse.findByIdAndUpdate(
+      nextResponse._id,
+      {
+        reviewAssignment: {
+          assignedTo: userId,
+          assignedAt: new Date(),
+          expiresAt: expiresAt
+        }
+      },
+      { new: true }
+    )
+    .populate({
+      path: 'survey',
+      select: 'surveyName description category sections company assignedQualityAgents',
+      populate: {
+        path: 'assignedQualityAgents.qualityAgent',
+        select: 'firstName lastName email _id'
+      }
+    })
+    .populate('interviewer', 'firstName lastName email')
+    .lean();
+
+    // Calculate effective questions (same logic as getPendingApprovals)
+    function findQuestionByText(questionText, survey) {
+      if (survey?.sections) {
+        for (const section of survey.sections) {
+          if (section.questions) {
+            for (const question of section.questions) {
+              if (question.text === questionText) {
+                return question;
+              }
+            }
+          }
+        }
+      }
+      return null;
+    }
+
+    function evaluateCondition(condition, responses) {
+      if (!condition.questionId || !condition.operator || condition.value === undefined || condition.value === '__NOVALUE__') {
+        return false;
+      }
+      const targetResponse = responses.find(response => {
+        return response.questionId === condition.questionId || 
+               response.questionText === condition.questionText;
+      });
+      if (!targetResponse || !targetResponse.response) {
+        return false;
+      }
+      let responseValue = targetResponse.response;
+      const conditionValue = condition.value;
+
+      // Handle array responses
+      const isArrayResponse = Array.isArray(responseValue);
+      if (isArrayResponse) {
+        // For array responses, check if any element matches the condition
+        switch (condition.operator) {
+          case 'equals':
+            return responseValue.includes(conditionValue);
+          case 'not_equals':
+            return !responseValue.includes(conditionValue);
+          case 'contains':
+            return responseValue.some(val => val.toString().toLowerCase().includes(conditionValue.toString().toLowerCase()));
+          case 'not_contains':
+            return !responseValue.some(val => val.toString().toLowerCase().includes(conditionValue.toString().toLowerCase()));
+          case 'is_selected':
+            return responseValue.includes(conditionValue);
+          case 'is_not_selected':
+            return !responseValue.includes(conditionValue);
+          case 'is_empty':
+            return responseValue.length === 0;
+          case 'is_not_empty':
+            return responseValue.length > 0;
+          default:
+            // For other operators, use first value or return false
+            if (responseValue.length === 0) return false;
+            responseValue = responseValue[0];
+        }
+      }
+
+      // Handle non-array responses
+      switch (condition.operator) {
+        case 'equals': return responseValue === conditionValue;
+        case 'not_equals': return responseValue !== conditionValue;
+        case 'contains': return responseValue.toString().toLowerCase().includes(conditionValue.toString().toLowerCase());
+        case 'not_contains': return !responseValue.toString().toLowerCase().includes(conditionValue.toString().toLowerCase());
+        case 'greater_than': return parseFloat(responseValue) > parseFloat(conditionValue);
+        case 'less_than': return parseFloat(responseValue) < parseFloat(conditionValue);
+        case 'is_empty': return !responseValue || responseValue.toString().trim() === '';
+        case 'is_not_empty': return responseValue && responseValue.toString().trim() !== '';
+        case 'is_selected': return responseValue === conditionValue;
+        case 'is_not_selected': return responseValue !== conditionValue;
+        default: return false;
+      }
+    }
+
+    function areConditionsMet(conditions, responses) {
+      if (!conditions || conditions.length === 0) return true;
+      return conditions.every(condition => evaluateCondition(condition, responses));
+    }
+
+    const effectiveQuestions = updatedResponse.responses?.filter(r => {
+      if (!r.isSkipped) return true;
+      const surveyQuestion = findQuestionByText(r.questionText, updatedResponse.survey);
+      const hasConditions = surveyQuestion?.conditions && surveyQuestion.conditions.length > 0;
+      if (hasConditions) {
+        const conditionsMet = areConditionsMet(surveyQuestion.conditions, updatedResponse.responses);
+        if (!conditionsMet) {
+          return false;
+        }
+      }
+      return true;
+    }).length || 0;
+    
+    const answeredQuestions = updatedResponse.responses?.filter(r => !r.isSkipped).length || 0;
+    const completionPercentage = effectiveQuestions > 0 ? Math.round((answeredQuestions / effectiveQuestions) * 100) : 0;
+
+    const transformedResponse = {
+      ...updatedResponse,
+      totalQuestions: effectiveQuestions,
+      answeredQuestions,
+      completionPercentage
+    };
+
+    res.status(200).json({
+      success: true,
+      data: {
+        interview: transformedResponse,
+        expiresAt: expiresAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting next review assignment:', error);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get next review assignment',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+};
+
+// Release review assignment (when user abandons review)
+const releaseReviewAssignment = async (req, res) => {
+  try {
+    const { responseId } = req.params;
+    const userId = req.user.id;
+
+    const surveyResponse = await SurveyResponse.findOne({ responseId });
+
+    if (!surveyResponse) {
+      return res.status(404).json({
+        success: false,
+        message: 'Survey response not found'
+      });
+    }
+
+    // Check if this user has the assignment
+    if (!surveyResponse.reviewAssignment || 
+        surveyResponse.reviewAssignment.assignedTo?.toString() !== userId.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'You do not have an active assignment for this response'
+      });
+    }
+
+    // Release the assignment
+    await SurveyResponse.findByIdAndUpdate(
+      surveyResponse._id,
+      {
+        $unset: { reviewAssignment: 1 }
+      }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: 'Review assignment released successfully'
+    });
+
+  } catch (error) {
+    console.error('Error releasing review assignment:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to release review assignment',
+      error: error.message
+    });
+  }
+};
+
 // Submit survey response verification
 const submitVerification = async (req, res) => {
   try {
@@ -1466,7 +1978,17 @@ const submitVerification = async (req, res) => {
       });
     }
 
-    // Update the survey response with verification data
+    // Check if user has the assignment (or if assignment expired, allow anyway)
+    if (surveyResponse.reviewAssignment && 
+        surveyResponse.reviewAssignment.assignedTo?.toString() !== reviewerId.toString() &&
+        surveyResponse.reviewAssignment.expiresAt > new Date()) {
+      return res.status(403).json({
+        success: false,
+        message: 'This response is assigned to another reviewer'
+      });
+    }
+
+    // Update the survey response with verification data and clear assignment
     const updateData = {
       status: status === 'approved' ? 'Approved' : 'Rejected',
       verificationData: {
@@ -1478,7 +2000,8 @@ const submitVerification = async (req, res) => {
         questionAccuracy: verificationCriteria.questionAccuracy,
         dataAccuracy: verificationCriteria.dataAccuracy,
         locationMatch: verificationCriteria.locationMatch
-      }
+      },
+      $unset: { reviewAssignment: 1 } // Clear assignment on completion
     };
 
     const updatedResponse = await SurveyResponse.findByIdAndUpdate(
@@ -1594,9 +2117,9 @@ const getSurveyResponseById = async (req, res) => {
 
     // Find the survey response
     const surveyResponse = await SurveyResponse.findById(responseId)
-      .populate('survey', 'surveyName description status')
-      .populate('interviewer', 'name email')
-      .populate('session', 'sessionId status startTime endTime');
+      .populate('survey', 'surveyName description status sections questions targetAudience settings')
+      .populate('interviewer', 'firstName lastName email phone')
+      .select('survey interviewer status responses location metadata interviewMode selectedAC audioRecording createdAt updatedAt startedAt completedAt totalTimeSpent completionPercentage responseId');
 
     if (!surveyResponse) {
       return res.status(404).json({
@@ -1606,7 +2129,7 @@ const getSurveyResponseById = async (req, res) => {
     }
 
     // Check if the interviewer has access to this response
-    if (surveyResponse.interviewer._id.toString() !== interviewerId) {
+    if (surveyResponse.interviewer && surveyResponse.interviewer._id.toString() !== interviewerId) {
       return res.status(403).json({
         success: false,
         message: 'You are not authorized to view this survey response'
@@ -1672,6 +2195,7 @@ const getSurveyResponses = async (req, res) => {
     // Get responses with pagination
     const responses = await SurveyResponse.find(filter)
       .populate('interviewer', 'firstName lastName email')
+      .populate('verificationData.reviewer', 'firstName lastName email')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -1806,6 +2330,8 @@ module.exports = {
   uploadAudioFile,
   getMyInterviews,
   getPendingApprovals,
+  getNextReviewAssignment,
+  releaseReviewAssignment,
   submitVerification,
   debugSurveyResponses,
   getSurveyResponseById,

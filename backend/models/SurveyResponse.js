@@ -81,6 +81,14 @@ const surveyResponseSchema = new mongoose.Schema({
       type: mongoose.Schema.Types.Mixed,
       required: true
     },
+    responseCodes: {
+      type: mongoose.Schema.Types.Mixed, // Can be string, array, or null
+      default: null
+    },
+    responseWithCodes: {
+      type: mongoose.Schema.Types.Mixed, // Structured response with codes, answers, and optionText
+      default: null
+    },
     responseTime: {
       type: Number, // time taken to answer in seconds
       default: 0
@@ -227,6 +235,20 @@ const surveyResponseSchema = new mongoose.Schema({
     uploadedAt: {
       type: Date,
       default: null
+    }
+  },
+
+  // Review Assignment (Queue-based assignment system)
+  reviewAssignment: {
+    assignedTo: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    assignedAt: {
+      type: Date
+    },
+    expiresAt: {
+      type: Date
     }
   },
 

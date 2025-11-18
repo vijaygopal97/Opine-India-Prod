@@ -375,7 +375,7 @@ const surveySchema = new mongoose.Schema({
       id: { type: String, required: true },
       type: {
         type: String,
-        enum: ['text', 'textarea', 'multiple_choice', 'single_choice', 'single_select', 'rating', 'rating_scale', 'yes_no', 'file_upload', 'date', 'dropdown'],
+        enum: ['text', 'textarea', 'numeric', 'multiple_choice', 'single_choice', 'single_select', 'rating', 'rating_scale', 'yes_no', 'file_upload', 'date', 'dropdown'],
         required: true
       },
       text: { type: String, required: true },
@@ -385,13 +385,15 @@ const surveySchema = new mongoose.Schema({
       options: [{
         id: { type: String, required: true },
         text: { type: String, required: true },
-        value: { type: String, required: true }
+        value: { type: String, required: true },
+        code: { type: String, default: null } // Option code (default: 1,2,3,4...)
       }],
       scale: {
         min: { type: Number },
         max: { type: Number },
         minLabel: { type: String },
-        maxLabel: { type: String }
+        maxLabel: { type: String },
+        labels: [{ type: String }] // Array of labels for each point
       },
       conditions: [{
         questionId: { type: String, required: true },
@@ -408,6 +410,10 @@ const surveySchema = new mongoose.Schema({
         minValue: { type: Number },
         maxValue: { type: Number },
         pattern: { type: String }
+      },
+      settings: {
+        type: mongoose.Schema.Types.Mixed,
+        default: {}
       },
       isFixed: { type: Boolean, default: false },
       isLocked: { type: Boolean, default: false }
@@ -435,7 +441,8 @@ const surveySchema = new mongoose.Schema({
       min: { type: Number },
       max: { type: Number },
       minLabel: { type: String },
-      maxLabel: { type: String }
+      maxLabel: { type: String },
+      labels: [{ type: String }] // Array of labels for each point
     },
     conditions: [{
       questionId: { type: String, required: true },
@@ -452,6 +459,10 @@ const surveySchema = new mongoose.Schema({
       minValue: { type: Number },
       maxValue: { type: Number },
       pattern: { type: String }
+    },
+    settings: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {}
     }
   }],
 

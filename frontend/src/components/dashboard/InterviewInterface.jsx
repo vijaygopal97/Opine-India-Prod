@@ -29,6 +29,7 @@ const InterviewInterface = ({ survey, onClose, onComplete }) => {
   const [validationErrors, setValidationErrors] = useState(new Set());
   const [targetAudienceErrors, setTargetAudienceErrors] = useState(new Map());
   const [genderQuotas, setGenderQuotas] = useState(null);
+  const [shuffledOptions, setShuffledOptions] = useState({}); // Store shuffled options per questionId to maintain consistent order
   
   // Audio recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -1501,12 +1502,59 @@ const InterviewInterface = ({ survey, onClose, onComplete }) => {
   }, [isInterviewActive, isPaused]);
 
 
+  // Fisher-Yates shuffle algorithm for randomizing options
+  const shuffleArray = (array) => {
+    const shuffled = [...array];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
+  };
+
+  // Get shuffled options for a question (shuffle once, then reuse)
+  // ONLY for multiple_choice questions, and only if shuffleOptions is enabled
+  const getShuffledOptions = (questionId, originalOptions, question) => {
+    if (!originalOptions || originalOptions.length === 0) return originalOptions;
+    
+    // Only check shuffleOptions flag for multiple_choice questions
+    // Check if shuffling is enabled for this question (default to true if not set for backward compatibility)
+    const shouldShuffle = question?.settings?.shuffleOptions !== false;
+    
+    // If shuffling is disabled, return original options
+    if (!shouldShuffle) {
+      return originalOptions;
+    }
+    
+    // If already shuffled for this question, return cached shuffled order
+    if (shuffledOptions[questionId]) {
+      return shuffledOptions[questionId];
+    }
+    
+    // Shuffle options for the first time
+    const shuffled = shuffleArray(originalOptions);
+    setShuffledOptions(prev => ({
+      ...prev,
+      [questionId]: shuffled
+    }));
+    
+    return shuffled;
+  };
+
   // Render question input based on type
   const renderQuestionInput = () => {
     if (!currentVisibleQuestion) return null;
 
     const { type, options, required } = currentVisibleQuestion;
     const currentResponse = responses[currentVisibleQuestion.id] || '';
+    const questionId = currentVisibleQuestion.id;
+
+    // Get shuffled options ONLY for multiple_choice questions (if shuffleOptions is enabled)
+    // Dropdown and other question types use original order
+    let displayOptions = options;
+    if (type === 'multiple_choice') {
+      displayOptions = getShuffledOptions(questionId, options, currentVisibleQuestion);
+    }
 
     switch (type) {
       case 'text':
@@ -1528,7 +1576,7 @@ const InterviewInterface = ({ survey, onClose, onComplete }) => {
         
         return (
           <div className="space-y-4">
-            {options.map((option, index) => {
+            {displayOptions.map((option, index) => {
               const optionValue = typeof option === 'object' ? option.value || option.text : option;
               const optionText = typeof option === 'object' ? option.text : option;
               const optionId = typeof option === 'object' ? option.id : index;

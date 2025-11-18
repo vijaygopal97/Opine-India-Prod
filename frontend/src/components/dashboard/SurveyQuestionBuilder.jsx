@@ -26,7 +26,8 @@ import {
   Clock,
   Zap,
   Lock,
-  Shield
+  Shield,
+  Hash
 } from 'lucide-react';
 import ConditionalLogic from './ConditionalLogic';
 import SurveyResponse from './SurveyResponse';
@@ -74,14 +75,29 @@ const SurveyQuestionBuilder = ({ onSave, onUpdate, initialData, surveyData }) =>
       // Ensure fixed questions are included
       const sectionsWithFixedQuestions = ensureFixedQuestionsInSurvey(initialData);
       
-      // Ensure all questions have proper order numbers
+      // Ensure all questions have proper order numbers and preserve settings
       let globalOrder = 0;
       const updatedSections = sectionsWithFixedQuestions.map((section, sectionIndex) => ({
         ...section,
         questions: section.questions.map((question, questionIndex) => {
+          // Preserve settings object if it exists
+          const preservedSettings = question.settings && typeof question.settings === 'object' 
+            ? { ...question.settings } 
+            : {};
+          
+          // Debug logging for settings loading
+          if (question.type === 'multiple_choice' && (preservedSettings.allowMultiple || preservedSettings.maxSelections)) {
+            console.log('🔍 Loading settings for question:', {
+              questionId: question.id,
+              questionText: question.text,
+              settings: preservedSettings
+            });
+          }
+          
           const updatedQuestion = {
             ...question,
-            order: question.order !== undefined ? question.order : globalOrder
+            order: question.order !== undefined ? question.order : globalOrder,
+            settings: preservedSettings
           };
           globalOrder++;
           return updatedQuestion;
@@ -112,6 +128,13 @@ const SurveyQuestionBuilder = ({ onSave, onUpdate, initialData, surveyData }) =>
       icon: Type,
       description: 'Open-ended text response',
       color: 'green'
+    },
+    {
+      id: 'numeric',
+      name: 'Numeric',
+      icon: Hash,
+      description: 'Numeric input only',
+      color: 'cyan'
     },
     {
       id: 'rating',
@@ -223,13 +246,21 @@ const SurveyQuestionBuilder = ({ onSave, onUpdate, initialData, surveyData }) =>
       required: true,
       order: globalOrder, // Add order number
       options: type === 'multiple_choice' || type === 'dropdown' ? [
-        { id: `${questionId}_opt_1`, text: 'Option 1', value: 'option1' },
-        { id: `${questionId}_opt_2`, text: 'Option 2', value: 'option2' }
+        { id: `${questionId}_opt_1`, text: 'Option 1', value: 'option1', code: '1' },
+        { id: `${questionId}_opt_2`, text: 'Option 2', value: 'option2', code: '2' }
       ] : [],
+      scale: type === 'rating' ? {
+        min: 1,
+        max: 5,
+        labels: [],
+        minLabel: '',
+        maxLabel: ''
+      } : undefined,
       settings: {
         allowMultiple: type === 'multiple_choice',
         allowOther: false,
-        required: true
+        required: true,
+        shuffleOptions: type === 'multiple_choice' ? true : undefined // Default to true for multiple_choice questions
       }
     };
 
@@ -249,17 +280,43 @@ const SurveyQuestionBuilder = ({ onSave, onUpdate, initialData, surveyData }) =>
         ...updatedSections[sectionIndex],
         questions: [...updatedSections[sectionIndex].questions]
       };
+      
+      // Preserve existing settings when updating
+      const currentQuestion = updatedSections[sectionIndex].questions[questionIndex];
+      const currentSettings = currentQuestion?.settings && typeof currentQuestion.settings === 'object' 
+        ? { ...currentQuestion.settings } 
+        : {};
+      
+      // Merge settings if updates contain settings
+      let mergedSettings = currentSettings;
+      if (updates.settings) {
+        mergedSettings = {
+          ...currentSettings,
+          ...updates.settings
+        };
+      }
+      
       updatedSections[sectionIndex].questions[questionIndex] = {
-        ...updatedSections[sectionIndex].questions[questionIndex],
-        ...updates
+        ...currentQuestion,
+        ...updates,
+        settings: mergedSettings
       };
       
-      // Update parent component for conditional logic changes
-      if (updates.conditions !== undefined) {
-        setTimeout(() => {
-          onUpdate(updatedSections);
-        }, 0);
+      // Debug logging for settings updates
+      if (updates.settings && (updates.settings.allowMultiple !== undefined || updates.settings.maxSelections !== undefined)) {
+        console.log('🔍 Updating question settings:', {
+          questionId: updatedSections[sectionIndex].questions[questionIndex].id,
+          questionText: updatedSections[sectionIndex].questions[questionIndex].text,
+          oldSettings: currentSettings,
+          newSettings: mergedSettings,
+          updates: updates.settings
+        });
       }
+      
+      // Update parent component for any changes (not just conditions)
+      setTimeout(() => {
+        onUpdate(updatedSections);
+      }, 0);
       
       return updatedSections;
     });
@@ -393,6 +450,11 @@ const SurveyQuestionBuilder = ({ onSave, onUpdate, initialData, surveyData }) =>
             {question.description && (
               <p className="text-gray-600">{question.description}</p>
             )}
+            {question.settings?.allowMultiple && question.settings?.maxSelections && (
+              <p className="text-sm text-blue-600 font-medium">
+                Maximum {question.settings.maxSelections} selection{question.settings.maxSelections > 1 ? 's' : ''} allowed
+              </p>
+            )}
             <div className="space-y-2">
               {question.options.map((option, index) => (
                 <label key={index} className="flex items-center space-x-3 p-3 border border-gray-200 rounded-lg hover:bg-gray-50 cursor-pointer">
@@ -430,22 +492,42 @@ const SurveyQuestionBuilder = ({ onSave, onUpdate, initialData, surveyData }) =>
         );
 
       case 'rating':
+        const scale = question.scale || { min: 1, max: 5 };
+        const min = scale.min || 1;
+        const max = scale.max || 5;
+        const labels = scale.labels || [];
+        const minLabel = scale.minLabel || '';
+        const maxLabel = scale.maxLabel || '';
+        const ratings = [];
+        for (let i = min; i <= max; i++) {
+          ratings.push(i);
+        }
         return (
           <div className="space-y-3">
             <h3 className="text-lg font-medium text-gray-900">{question.text}</h3>
             {question.description && (
               <p className="text-gray-600">{question.description}</p>
             )}
-            <div className="flex space-x-2">
-              {[1, 2, 3, 4, 5].map((rating) => (
+            <div className="flex flex-wrap items-center gap-2">
+              {ratings.map((rating) => (
                 <button
                   key={rating}
-                  className="w-10 h-10 border border-gray-300 rounded-lg hover:bg-gray-50 focus:ring-2 focus:ring-blue-500"
+                  className="w-12 h-12 border-2 border-gray-300 rounded-lg hover:bg-gray-50 focus:ring-2 focus:ring-blue-500 flex flex-col items-center justify-center"
+                  title={labels[rating - min] || ''}
                 >
-                  {rating}
+                  <span className="text-lg font-semibold">{rating}</span>
+                  {labels[rating - min] && (
+                    <span className="text-xs text-gray-500 mt-0.5">{labels[rating - min]}</span>
+                  )}
                 </button>
               ))}
             </div>
+            {(minLabel || maxLabel) && (
+              <div className="flex justify-between text-sm text-gray-500">
+                <span>{minLabel}</span>
+                <span>{maxLabel}</span>
+              </div>
+            )}
             {question.required && (
               <p className="text-sm text-red-600">* Required</p>
             )}
@@ -792,11 +874,38 @@ const SurveyQuestionBuilder = ({ onSave, onUpdate, initialData, surveyData }) =>
                             {(question.type === 'multiple_choice' || question.type === 'dropdown') && (
                               <div className="space-y-2">
                                 <label className="block text-sm font-medium text-gray-700">Options</label>
+                                <div className="text-xs text-gray-500 mb-2">Each option can have a code (default: 1, 2, 3, 4...)</div>
                                 {question.options.map((option, optionIndex) => {
                                   // Ensure option has a unique ID
                                   const optionId = option.id || generateUniqueId(`opt_${question.id}`);
+                                  // Default code is optionIndex + 1 if not set
+                                  const defaultCode = option.code || String(optionIndex + 1);
                                   return (
                                     <div key={optionId} className="flex items-center space-x-2">
+                                      {/* Code input */}
+                                      <input
+                                        type="text"
+                                        value={option.code || defaultCode}
+                                        onChange={(e) => {
+                                          if (!isFixed) {
+                                            const updatedOptions = [...question.options];
+                                            updatedOptions[optionIndex] = {
+                                              ...option,
+                                              id: optionId,
+                                              code: e.target.value || String(optionIndex + 1)
+                                            };
+                                            updateQuestion(currentSection, questionIndex, { options: updatedOptions });
+                                            setTimeout(() => {
+                                              onUpdate(sections);
+                                            }, 0);
+                                          }
+                                        }}
+                                        className={`w-16 px-2 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm ${isFixed ? 'border-gray-200 bg-gray-50 text-gray-600 cursor-not-allowed' : 'border-gray-300'}`}
+                                        placeholder={String(optionIndex + 1)}
+                                        disabled={isFixed}
+                                        title="Option Code"
+                                      />
+                                      {/* Option text input */}
                                       <input
                                         type="text"
                                         value={option.text || ''}
@@ -804,9 +913,11 @@ const SurveyQuestionBuilder = ({ onSave, onUpdate, initialData, surveyData }) =>
                                           if (!isFixed) {
                                             const updatedOptions = [...question.options];
                                             updatedOptions[optionIndex] = {
+                                              ...option,
                                               id: optionId,
                                               text: e.target.value,
-                                              value: e.target.value.toLowerCase().replace(/\s+/g, '_')
+                                              value: e.target.value.toLowerCase().replace(/\s+/g, '_'),
+                                              code: option.code || String(optionIndex + 1)
                                             };
                                             updateQuestion(currentSection, questionIndex, { options: updatedOptions });
                                             // Update parent component
@@ -823,7 +934,12 @@ const SurveyQuestionBuilder = ({ onSave, onUpdate, initialData, surveyData }) =>
                                         <button
                                           onClick={() => {
                                             const updatedOptions = question.options.filter((_, i) => i !== optionIndex);
-                                            updateQuestion(currentSection, questionIndex, { options: updatedOptions });
+                                            // Reassign codes after deletion
+                                            const reindexedOptions = updatedOptions.map((opt, idx) => ({
+                                              ...opt,
+                                              code: opt.code || String(idx + 1)
+                                            }));
+                                            updateQuestion(currentSection, questionIndex, { options: reindexedOptions });
                                           }}
                                           className="p-2 text-red-600 hover:text-red-700 transition-colors"
                                         >
@@ -839,7 +955,8 @@ const SurveyQuestionBuilder = ({ onSave, onUpdate, initialData, surveyData }) =>
                                       const newOption = {
                                         id: generateUniqueId(`opt_${question.id}`),
                                         text: `Option ${question.options.length + 1}`,
-                                        value: `option${question.options.length + 1}`
+                                        value: `option${question.options.length + 1}`,
+                                        code: String(question.options.length + 1)
                                       };
                                       const updatedOptions = [...question.options, newOption];
                                       updateQuestion(currentSection, questionIndex, { options: updatedOptions });
@@ -867,18 +984,188 @@ const SurveyQuestionBuilder = ({ onSave, onUpdate, initialData, surveyData }) =>
                               </label>
                               
                               {question.type === 'multiple_choice' && (
-                                <label className="flex items-center space-x-2">
-                                  <input
-                                    type="checkbox"
-                                    checked={question.settings?.allowMultiple || false}
-                                    onChange={(e) => !isFixed && updateQuestion(currentSection, questionIndex, {
-                                      settings: { ...question.settings, allowMultiple: e.target.checked }
-                                    })}
-                                    className={`w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 ${isFixed ? 'cursor-not-allowed opacity-50' : ''}`}
-                                    disabled={isFixed}
-                                  />
-                                  <span className={`text-sm ${isFixed ? 'text-gray-500' : 'text-gray-700'}`}>Allow multiple selections</span>
-                                </label>
+                                <div className="space-y-3">
+                                  <div className="flex items-center space-x-4 flex-wrap">
+                                    <label className="flex items-center space-x-2">
+                                      <input
+                                        type="checkbox"
+                                        checked={question.settings?.allowMultiple || false}
+                                        onChange={(e) => !isFixed && updateQuestion(currentSection, questionIndex, {
+                                          settings: { 
+                                            ...question.settings, 
+                                            allowMultiple: e.target.checked,
+                                            // Reset maxSelections when disabling multiple selections
+                                            maxSelections: e.target.checked ? (question.settings?.maxSelections || null) : null
+                                          }
+                                        })}
+                                        className={`w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 ${isFixed ? 'cursor-not-allowed opacity-50' : ''}`}
+                                        disabled={isFixed}
+                                      />
+                                      <span className={`text-sm ${isFixed ? 'text-gray-500' : 'text-gray-700'}`}>Allow multiple selections</span>
+                                    </label>
+                                    
+                                    {question.settings?.allowMultiple && (
+                                      <div className="flex items-center space-x-2">
+                                        <label className="text-sm text-gray-700">Maximum selections:</label>
+                                        <input
+                                          type="number"
+                                          min="2"
+                                          max={question.options?.length || 999}
+                                          value={question.settings?.maxSelections || ''}
+                                          onChange={(e) => !isFixed && updateQuestion(currentSection, questionIndex, {
+                                            settings: { 
+                                              ...question.settings, 
+                                              maxSelections: e.target.value ? parseInt(e.target.value) : null
+                                            }
+                                          })}
+                                          placeholder="Unlimited"
+                                          className={`w-24 px-2 py-1 text-sm border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${isFixed ? 'border-gray-200 bg-gray-50 text-gray-600 cursor-not-allowed' : 'border-gray-300'}`}
+                                          disabled={isFixed}
+                                        />
+                                        {question.settings?.maxSelections && (
+                                          <span className="text-xs text-gray-500">
+                                            (Max {question.settings.maxSelections} can be selected)
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                  
+                                  <label className="flex items-center space-x-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={question.settings?.shuffleOptions !== false} // Default to true if not set
+                                      onChange={(e) => !isFixed && updateQuestion(currentSection, questionIndex, {
+                                        settings: { 
+                                          ...question.settings, 
+                                          shuffleOptions: e.target.checked
+                                        }
+                                      })}
+                                      className={`w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 ${isFixed ? 'cursor-not-allowed opacity-50' : ''}`}
+                                      disabled={isFixed}
+                                    />
+                                    <span className={`text-sm ${isFixed ? 'text-gray-500' : 'text-gray-700'}`}>Shuffle options</span>
+                                  </label>
+                                </div>
+                              )}
+
+                              {/* Rating Scale Configuration */}
+                              {question.type === 'rating' && (
+                                <div className="mt-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                                  <label className="block text-sm font-medium text-gray-700 mb-3">Rating Scale Configuration</label>
+                                  
+                                  <div className="grid grid-cols-2 gap-4 mb-4">
+                                    <div>
+                                      <label className="block text-xs text-gray-600 mb-1">Minimum Value</label>
+                                      <input
+                                        type="number"
+                                        min="1"
+                                        value={question.scale?.min || 1}
+                                        onChange={(e) => !isFixed && updateQuestion(currentSection, questionIndex, {
+                                          scale: {
+                                            ...question.scale,
+                                            min: parseInt(e.target.value) || 1,
+                                            max: Math.max(parseInt(e.target.value) || 1, question.scale?.max || 5)
+                                          }
+                                        })}
+                                        className={`w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${isFixed ? 'border-gray-200 bg-gray-50 text-gray-600 cursor-not-allowed' : 'border-gray-300'}`}
+                                        disabled={isFixed}
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-xs text-gray-600 mb-1">Maximum Value</label>
+                                      <input
+                                        type="number"
+                                        min={question.scale?.min || 1}
+                                        value={question.scale?.max || 5}
+                                        onChange={(e) => !isFixed && updateQuestion(currentSection, questionIndex, {
+                                          scale: {
+                                            ...question.scale,
+                                            max: Math.max(parseInt(e.target.value) || 5, question.scale?.min || 1)
+                                          }
+                                        })}
+                                        className={`w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${isFixed ? 'border-gray-200 bg-gray-50 text-gray-600 cursor-not-allowed' : 'border-gray-300'}`}
+                                        disabled={isFixed}
+                                      />
+                                    </div>
+                                  </div>
+
+                                  {/* Labels for each point */}
+                                  <div className="mb-4">
+                                    <label className="block text-xs text-gray-600 mb-2">Labels for Each Point (Optional)</label>
+                                    <div className="space-y-2 max-h-48 overflow-y-auto">
+                                      {(() => {
+                                        const min = question.scale?.min || 1;
+                                        const max = question.scale?.max || 5;
+                                        const labels = question.scale?.labels || [];
+                                        const points = [];
+                                        for (let i = min; i <= max; i++) {
+                                          points.push(i);
+                                        }
+                                        return points.map((point) => (
+                                          <div key={point} className="flex items-center space-x-2">
+                                            <span className="text-sm font-medium text-gray-700 w-8">{point}:</span>
+                                            <input
+                                              type="text"
+                                              value={labels[point - min] || ''}
+                                              onChange={(e) => {
+                                                if (!isFixed) {
+                                                  const newLabels = [...labels];
+                                                  newLabels[point - min] = e.target.value;
+                                                  updateQuestion(currentSection, questionIndex, {
+                                                    scale: {
+                                                      ...question.scale,
+                                                      labels: newLabels
+                                                    }
+                                                  });
+                                                }
+                                              }}
+                                              placeholder={`Label for ${point} (optional)`}
+                                              className={`flex-1 px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${isFixed ? 'border-gray-200 bg-gray-50 text-gray-600 cursor-not-allowed' : 'border-gray-300'}`}
+                                              disabled={isFixed}
+                                            />
+                                          </div>
+                                        ));
+                                      })()}
+                                    </div>
+                                  </div>
+
+                                  {/* Min and Max Labels (Alternative to individual labels) */}
+                                  <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                      <label className="block text-xs text-gray-600 mb-1">Minimum Label (Optional)</label>
+                                      <input
+                                        type="text"
+                                        value={question.scale?.minLabel || ''}
+                                        onChange={(e) => !isFixed && updateQuestion(currentSection, questionIndex, {
+                                          scale: {
+                                            ...question.scale,
+                                            minLabel: e.target.value
+                                          }
+                                        })}
+                                        placeholder="e.g., Poor, Disagree"
+                                        className={`w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${isFixed ? 'border-gray-200 bg-gray-50 text-gray-600 cursor-not-allowed' : 'border-gray-300'}`}
+                                        disabled={isFixed}
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-xs text-gray-600 mb-1">Maximum Label (Optional)</label>
+                                      <input
+                                        type="text"
+                                        value={question.scale?.maxLabel || ''}
+                                        onChange={(e) => !isFixed && updateQuestion(currentSection, questionIndex, {
+                                          scale: {
+                                            ...question.scale,
+                                            maxLabel: e.target.value
+                                          }
+                                        })}
+                                        placeholder="e.g., Excellent, Agree"
+                                        className={`w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${isFixed ? 'border-gray-200 bg-gray-50 text-gray-600 cursor-not-allowed' : 'border-gray-300'}`}
+                                        disabled={isFixed}
+                                      />
+                                    </div>
+                                  </div>
+                                </div>
                               )}
                             </div>
 

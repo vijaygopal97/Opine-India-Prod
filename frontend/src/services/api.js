@@ -750,6 +750,26 @@ export const surveyResponseAPI = {
     }
   },
 
+  // Get next available response from queue for review (Queue-based assignment)
+  getNextReviewAssignment: async (params = {}) => {
+    try {
+      const response = await api.get('/api/survey-responses/next-review', { params });
+      return response.data;
+    } catch (error) {
+      throw error;
+    }
+  },
+
+  // Release review assignment (when user abandons review)
+  releaseReviewAssignment: async (responseId) => {
+    try {
+      const response = await api.post(`/api/survey-responses/release-review/${responseId}`);
+      return response.data;
+    } catch (error) {
+      throw error;
+    }
+  },
+
     // Submit survey response verification
     submitVerification: async (verificationData) => {
       try {
@@ -862,6 +882,24 @@ export const performanceAPI = {
     } catch (error) {
       throw error;
     }
+  },
+
+  // Get QC performance for a specific survey (Company Admin)
+  getQCPerformanceBySurvey: async (surveyId, params = {}) => {
+    try {
+      const response = await api.get(`/api/performance/qc-performance/survey/${surveyId}`, { params });
+      return response.data;
+    } catch (error) {
+      throw error;
+    }
+  },
+  getQCPerformanceTrends: async (surveyId, params = {}) => {
+    try {
+      const response = await api.get(`/api/performance/qc-performance/survey/${surveyId}/trends`, { params });
+      return response.data;
+    } catch (error) {
+      throw error;
+    }
   }
 };
 
@@ -880,7 +918,7 @@ export const reportAPI = {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
-        timeout: 600000, // 10 minutes timeout for large file uploads and report generation
+        timeout: 7200000, // 2 hours timeout for very large file uploads and report generation (up to 800MB)
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
       });
@@ -897,7 +935,7 @@ export const reportAPI = {
         excelPath,
         referenceDate
       }, {
-        timeout: 600000, // 10 minutes timeout
+        timeout: 7200000, // 2 hours timeout for large file processing
       });
       return response.data;
     } catch (error) {
